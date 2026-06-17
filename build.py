@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+__version__ = "1.1.0"
+
 ROOT = Path(__file__).resolve().parent
 DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
@@ -78,6 +80,7 @@ class Module:
     clean_cmd: list[str]
     build_dir: Optional[Path] = None
     env: Optional[dict[str, str]] = None
+    description: str = ""
 
 MODULES = [
     Module(
@@ -88,6 +91,7 @@ MODULES = [
         clean_cmd=["cargo", "clean"],
         build_dir=ROOT / "backend" / "target",
         env={"CARGO_TERM_COLOR": "always"},
+        description="Core backend service (Rust/Cargo)",
     ),
     Module(
         name="frontend",
@@ -97,6 +101,7 @@ MODULES = [
         clean_cmd=["rm", "-rf", "node_modules", "dist"],
         build_dir=ROOT / "frontend" / "dist",
         env={"NODE_ENV": "production"},
+        description="Web frontend UI (TypeScript/React)",
     ),
     Module(
         name="market",
@@ -105,6 +110,7 @@ MODULES = [
         build_cmd=["go", "build", "-o", "market", "."],
         clean_cmd=["rm", "-f", "market"],
         build_dir=ROOT / "market" / "market",
+        description="Market data service (Go)",
     ),
     Module(
         name="frailbox",
@@ -113,6 +119,7 @@ MODULES = [
         build_cmd=["make"],
         clean_cmd=["make", "distclean"],
         build_dir=ROOT / "frailbox" / "frailbox",
+        description="Sandboxed execution environment (C)",
     ),
     Module(
         name="engine",
@@ -781,21 +788,34 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 build.py                    Build all modules
-  python3 build.py -m backend         Build only backend
-  python3 build.py -m frontend,market Build frontend and market
-  python3 build.py --clean            Clean all artifacts
-  python3 build.py --release          Release build (Rust only)
-  python3 build.py --verbose          Verbose output
+  python3 build.py                         Build all modules
+  python3 build.py -t backend              Build only backend
+  python3 build.py -t frontend,market      Build frontend and market
+  python3 build.py -t backend --skip-diagnostics  Fast backend build
+  python3 build.py --clean                 Clean all artifacts
+  python3 build.py --release               Release build (Rust only)
+  python3 build.py -vvv                    Maximum verbosity
+  python3 build.py -o ./dist               Custom output directory
+  python3 build.py --list-targets          Show all available targets
+  python3 build.py --version               Show version
 
 Diagnostic bundle:
   python3 build.py
         """,
     )
     parser.add_argument(
-        "-m", "--module",
-        help="Module(s) to build (comma-separated, or 'all')",
+        "-t", "--target",
+        help="Target module(s) to build (comma-separated, or 'all')",
         default="all",
+    )
+    parser.add_argument(
+        "-m", "--module",
+        help=argparse.SUPPRESS,  # Hidden alias for backward compat
+        default=None,
+    )
+    parser.add_argument(
+        "--skip-diagnostics", action="store_true",
+        help="Skip diagnostic generation (faster iteration)",
     )
     parser.add_argument(
         "--clean", action="store_true",
@@ -806,26 +826,50 @@ Diagnostic bundle:
         help="Build in release mode (Rust backend)",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
-        help="Show detailed build output",
+        "--verbose", "-v", action="count", default=0,
+        help="Increase log verbosity (can be specified multiple times: -vvv)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        help="Custom output directory for build artifacts",
+        default=None,
+    )
+    parser.add_argument(
+        "--list-targets", action="store_true",
+        help="List all discoverable build targets with descriptions",
     )
     parser.add_argument(
         "--list", action="store_true",
-        help="List available modules and exit",
+        help=argparse.SUPPRESS,  # Hidden alias for backward compat
+    )
+    parser.add_argument(
+        "--version", action="version",
+        version=f"%(prog)s {__version__}",
     )
 
     args = parser.parse_args()
+
+    # Handle --module as alias for --target (backward compat)
+    if args.module is not None and args.target == "all":
+        args.target = args.module
+
+    # Handle --list as alias for --list-targets (backward compat)
+    if args.list:
+        args.list_targets = True
 
     print(f"\n  {color('Tent of Trials: building', Colors.CYAN)}")
     print(f"  Working directory: {ROOT}")
     print()
 
-    if args.list:
-        print(f"  {color('Available modules:', Colors.BOLD)}")
+    if args.list_targets:
+        print(f"  {color('Available build targets:', Colors.BOLD)}")
+        print()
         for m in MODULES:
-            print(f"    {color(m.name, Colors.CYAN)} ({m.language})")
+            desc = f" - {m.description}" if m.description else ""
+            print(f"    {color(m.name, Colors.CYAN)} ({m.language}){desc}")
             print(f"      dir: {m.dir.relative_to(ROOT)}")
             print(f"      build: {' '.join(m.build_cmd)}")
+            print()
         return 0
 
     print(f"  {color('Checking prerequisites...', Colors.GRAY)}")
@@ -839,15 +883,16 @@ Diagnostic bundle:
         print(f"  {color(msg, Colors.GRAY)}")
     else:
         print(f"  {color('✓ All prerequisites found', Colors.GREEN)}")
-    if args.module == "all":
+    if args.target == "all":
         selected = MODULES
     else:
-        names = [n.strip() for n in args.module.split(",")]
+        names = [n.strip() for n in args.target.split(",")]
         selected = [m for m in MODULES if m.name in names]
         not_found = set(names) - {m.name for m in MODULES}
         if not_found:
-            print(f"  {color('✗ Unknown modules:', Colors.RED)} {', '.join(not_found)}")
-            print(f"    Available: {', '.join(m.name for m in MODULES)}")
+            print(f"  {color('✗ Unknown targets:', Colors.RED)} {', '.join(not_found)}")
+            print(f"    Valid targets: {', '.join(m.name for m in MODULES)}")
+            print(f"    Use --list-targets to see all available targets with descriptions.")
             return 1
 
     if not selected:
@@ -884,7 +929,8 @@ Diagnostic bundle:
         print(f"  {color('✗ encryptly cannot run', Colors.RED)}")
         print(f"  {color('BLOCKER:', Colors.RED)} {blocker}")
         results = [("encryptly-preflight", False, elapsed, blocker, None)]
-        generate_logd(results, args.verbose)
+        if not args.skip_diagnostics:
+            generate_logd(results, args.verbose)
         return 1
     print(f"  {color('✓ encryptly runs', Colors.GREEN)}")
 
@@ -899,7 +945,30 @@ Diagnostic bundle:
 
     print_summary(results)
 
-    diagnostics_ok = generate_logd(results, args.verbose)
+    if args.skip_diagnostics:
+        print(f"  {color('⚡ Skipping diagnostics (--skip-diagnostics)', Colors.GRAY)}")
+        diagnostics_ok = True
+    else:
+        diagnostics_ok = generate_logd(results, args.verbose)
+
+    # Copy artifacts to custom output directory if specified
+    if args.output_dir:
+        output_path = Path(args.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        for module in selected:
+            if module.build_dir and module.build_dir.exists():
+                dest = output_path / module.name
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(module.build_dir, dest)
+                print(f"  {color(f'→ Copied {module.name} to {dest}', Colors.GRAY)}")
+        # Also copy diagnostics if generated
+        if diagnostics_ok and DIAGNOSTIC_DIR.exists():
+            diag_dest = output_path / "diagnostic"
+            diag_dest.mkdir(parents=True, exist_ok=True)
+            for f in DIAGNOSTIC_DIR.glob("build-*"):
+                shutil.copy2(f, diag_dest / f.name)
+            print(f"  {color(f'→ Copied diagnostics to {diag_dest}', Colors.GRAY)}")
 
     return 0 if diagnostics_ok and all(r[1] for r in results) else 1
 
